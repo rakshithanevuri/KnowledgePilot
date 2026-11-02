@@ -263,6 +263,7 @@ DEFAULT_STATE = {
     "evaluation_errors": {},
     "preview_document_id": None,
     "preview_page": 1,
+    "gemini_request_count": 0,
 }
 
 for key, value in DEFAULT_STATE.items():
@@ -280,6 +281,26 @@ MODEL_NAME = st.secrets.get(
     "GEMINI_MODEL",
     "gemini-3.5-flash",
 )
+# ============================================================
+# BASIC API USAGE PROTECTION
+# ============================================================
+
+MAX_GEMINI_REQUESTS_PER_SESSION = 10
+
+
+def allow_gemini_request():
+    """Limit Gemini API requests within one visitor session."""
+
+    current_count = st.session_state.gemini_request_count
+
+    if current_count >= MAX_GEMINI_REQUESTS_PER_SESSION:
+        st.warning(
+            "You have reached the Gemini request limit for this session."
+        )
+        return False
+
+    st.session_state.gemini_request_count += 1
+    return True
 
 
 # ============================================================
@@ -532,7 +553,7 @@ def render_home():
         type=["pdf"],
         accept_multiple_files=True,
         key="home_pdf_uploader",
-        help="You can select multiple PDF files at once.",
+        help="Maximum file size: 25 MB per PDF.",
     )
     upload_col, upload_hint = st.columns([1, 2])
     with upload_col:
@@ -547,22 +568,47 @@ def render_home():
         st.caption("KnowledgePilot extracts text and prepares it for search. AI-generated features run only when you request them.")
 
     if process_clicked and uploaded_files:
-        successes = 0
-        for uploaded_file in uploaded_files:
-            try:
-                success, message = process_document(uploaded_file)
-                if success:
-                    successes += 1
-                    st.success(message)
-                    doc_id = make_document_id(uploaded_file.getvalue())
-                    if doc_id not in st.session_state.selected_document_ids:
-                        st.session_state.selected_document_ids.append(doc_id)
-                else:
-                    st.info(message)
-            except Exception as error:
-                st.error(f"Could not process {uploaded_file.name}: {error}")
-        if successes:
-            st.rerun()
+
+        oversized_files = [
+            file.name
+            for file in uploaded_files
+            if file.size > 25 * 1024 * 1024
+        ]
+
+        if oversized_files:
+            st.error(
+                "These files exceed the 25 MB limit: "
+                + ", ".join(oversized_files)
+            )
+
+        else:
+            successes = 0
+
+            for uploaded_file in uploaded_files:
+                try:
+                    success, message = process_document(uploaded_file)
+
+                    if success:
+                        successes += 1
+                        st.success(message)
+
+                        doc_id = make_document_id(
+                            uploaded_file.getvalue()
+                        )
+
+                        if doc_id not in st.session_state.selected_document_ids:
+                            st.session_state.selected_document_ids.append(doc_id)
+
+                    else:
+                        st.info(message)
+
+                except Exception as error:
+                    st.error(
+                        f"Could not process {uploaded_file.name}: {error}"
+                    )
+
+            if successes:
+                st.rerun()
 
     
     st.write("")
@@ -734,14 +780,26 @@ def render_understand():
                     st.rerun()
 
             if st.button(
-                "Regenerate overview",
-                key=f"regenerate_{doc_id}",
+                "Generate document overview",
+                key=f"overview_{doc_id}",
+                use_container_width=True,
             ):
+                if not allow_gemini_request():
+                    return
 
-                del st.session_state.overviews[doc_id]
-                st.rerun()
+                try:
+                    with st.spinner("Analyzing document with Gemini..."):
+                        overview = generate_document_overview(
+                            document["pages"],
+                            API_KEY,
+                            MODEL_NAME,
+                        )
 
-        st.divider()
+                    st.session_state.overviews[doc_id] = overview
+                    st.rerun()
+
+                except Exception as error:
+                    st.error(classify_gemini_error(error))
 
 
 # ============================================================
@@ -817,6 +875,8 @@ def render_ask():
                     key=f"evaluate_answer_{message_index}",
                     help="Evaluate faithfulness and answer relevance using one Gemini request."
                 ):
+                    if not allow_gemini_request():
+                        return
 
                     try:
                         with st.spinner("Evaluating answer quality..."):
@@ -926,21 +986,19 @@ def render_ask():
         "Send question →",
         use_container_width=True,
     ):
-
         question = question.strip()
 
         if not question:
-
             st.warning("Please enter a question.")
 
+        elif not allow_gemini_request():
+            pass
+
         else:
-
             try:
-
                 with st.spinner(
                     "Searching documents and generating your answer..."
                 ):
-
                     retriever, combined_chunks = get_combined_retriever(
                         selected_ids
                     )
@@ -962,6 +1020,7 @@ def render_ask():
                         API_KEY,
                         MODEL_NAME,
                     )
+
                     citation_result = validate_citations(
                         answer,
                         results,
@@ -970,9 +1029,11 @@ def render_ask():
                 sources = []
 
                 for result in results:
-
                     sources.append({
-                        "filename": result.get("source", result.get("filename", "Document")),
+                        "filename": result.get(
+                            "source",
+                            result.get("filename", "Document")
+                        ),
                         "doc_id": result.get("doc_id"),
                         "page": result.get("page", "?"),
                         "text": result.get("text", ""),
@@ -995,16 +1056,11 @@ def render_ask():
                     "answer_evaluation": None,
                 })
 
-                # Clear on the next rerun, not after widget creation.
                 st.session_state.clear_question_input = True
-
                 st.rerun()
 
             except Exception as error:
-
-                st.error(
-                    classify_gemini_error(error)
-                )
+                st.error(classify_gemini_error(error))
 
 
 
@@ -1028,25 +1084,58 @@ def render_learn():
     mode = st.selectbox("Learning activity", ["Explanation", "Revision notes", "Quiz"])
     focus = st.text_input("Topic or focus (optional)", placeholder="e.g. neural networks, chapter 2, key definitions")
     st.caption("Generation happens only when you click the button. Results are cached for this session.")
-    if st.button("Generate learning material", type="primary", use_container_width=True):
-        query = focus.strip() or {
-            "Explanation": "Explain the main concepts in these documents",
-            "Revision notes": "Summarize the key concepts and definitions",
-            "Quiz": "Identify the key concepts suitable for a practice quiz",
-        }[mode]
-        try:
-            with st.spinner("Finding relevant passages..."):
-                retriever, combined_chunks = get_combined_retriever(selected_ids)
-                if retriever is None:
-                    st.warning("No readable document content is available.")
-                    return
-                results = retrieve_chunks(query, combined_chunks, retriever, top_k=6)
-                output = generate_learning_material(mode, focus, results, API_KEY, MODEL_NAME)
-            cache_key = (tuple(sorted(selected_ids)), mode, focus.strip().lower())
-            st.session_state.learning_cache[cache_key] = {"output": output, "sources": results}
-        except Exception as error:
-            st.error(classify_gemini_error(error))
+    if st.button(
+        "Generate learning material",
+        type="primary",
+        use_container_width=True,
+    ):
+        if not allow_gemini_request():
+            pass
+        else:
+            query = focus.strip() or {
+                "Explanation": "Explain the main concepts in these documents",
+                "Revision notes": "Summarize the key concepts and definitions",
+                "Quiz": "Identify the key concepts suitable for a practice quiz",
+            }[mode]
 
+            try:
+                with st.spinner("Finding relevant passages..."):
+                    retriever, combined_chunks = get_combined_retriever(
+                        selected_ids
+                    )
+
+                    if retriever is None:
+                        st.warning("No readable document content is available.")
+                        return
+
+                    results = retrieve_chunks(
+                        query,
+                        combined_chunks,
+                        retriever,
+                        top_k=6,
+                    )
+
+                    output = generate_learning_material(
+                        mode,
+                        focus,
+                        results,
+                        API_KEY,
+                        MODEL_NAME,
+                    )
+
+                cache_key = (
+                    tuple(sorted(selected_ids)),
+                    mode,
+                    focus.strip().lower(),
+                )
+
+                st.session_state.learning_cache[cache_key] = {
+                    "output": output,
+                    "sources": results,
+                }
+
+            except Exception as error:
+                st.error(classify_gemini_error(error))
     cache_key = (tuple(sorted(selected_ids)), mode, focus.strip().lower())
     cached = st.session_state.learning_cache.get(cache_key)
     if cached:
@@ -1174,6 +1263,8 @@ def render_evaluation():
             "Generate Evaluation Questions",
             key="generate_evaluation_questions",
         ):
+            if not allow_gemini_request():
+                return
             api_key = st.secrets.get("GEMINI_API_KEY", "")
             model_name = st.secrets.get(
                 "GEMINI_MODEL",
