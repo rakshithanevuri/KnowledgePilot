@@ -1,0 +1,26 @@
+@'
+# API keys and secrets
+.streamlit/secrets.toml
+.env
+.env.*
+
+# Virtual environments
+.venv/
+venv/
+env/
+pyvenv.cfg
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Logs
+*.log
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# IDE settings
+.vscode/
+'@ | Set-Content -Encoding utf8 .gitignore
