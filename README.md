@@ -136,6 +136,27 @@ Evaluation results are estimates based on the available test cases and should no
 - Persistent document storage.
 - Deployment for public access.
 
+## Live Demo
+
+Try KnowledgePilot: https://knowledgepilot.streamlit.app/
+
+## Screenshots
+
+### Home
+![KnowledgePilot Home](screenshots/home.png)
+
+### Understanding Documents
+![Understanding Documents](screenshots/understand.png)
+
+### Learning Interface
+![Learning Interface](screenshots/learning.png)
+
+### Question Answering
+![Question Answering](screenshots/askquestions.png)
+
+### PDF Preview
+![PDF Preview](screenshots/pdfpreview.png)
+
 ## Author
 
 Developed as an AI engineering portfolio project to explore Retrieval-Augmented Generation, semantic search, hybrid retrieval, and LLM-based evaluation.
